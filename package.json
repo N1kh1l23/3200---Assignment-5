@@ -1,16 +1,17 @@
 {
   "name": "ieeevis-mongo-queries",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "CS3200 Assignment 6 using MongoDB and Redis",
+  "main": "Query1.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "query1": "node Query1.js",
+    "query2": "node Query2.js",
+    "query3": "node Query3.js",
+    "query4": "node Query4.js",
+    "query5": "node Query5.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "mongodb": "^7.1.0"
+    "mongodb": "^6.15.0",
+    "redis": "^4.7.1"
   }
 }

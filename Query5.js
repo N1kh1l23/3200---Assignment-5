@@ -1,72 +1,99 @@
 const { MongoClient } = require("mongodb");
+const { createClient } = require("redis");
 
 async function main() {
-  const client = new MongoClient("mongodb://localhost:27017");
+  const mongoClient = new MongoClient("mongodb://localhost:27017");
+  const redisClient = createClient({ url: "redis://localhost:6379" });
+
   try {
-    await client.connect();
-    const db = client.db("ieeevisTweets");
+    await mongoClient.connect();
+    await redisClient.connect();
+
+    const db = mongoClient.db("ieeevisTweets");
     const tweets = db.collection("tweets");
 
-    // ---- Step 1: Create the Users collection with unique users ----
-    console.log("Step 1: Extracting unique users...");
-
-    // Use $group on user.id to deduplicate, keep the first user doc found
-    await tweets
-      .aggregate([
-        {
-          $group: {
-            _id: "$user.id",
-            user: { $first: "$user" },
-          },
+    const cursor = tweets.find(
+      {},
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          id_str: 1,
+          text: 1,
+          full_text: 1,
+          created_at: 1,
+          favorite_count: 1,
+          retweet_count: 1,
+          "user.screen_name": 1,
+          "user.name": 1,
         },
-        {
-          $replaceRoot: { newRoot: "$user" },
-        },
-        {
-          $out: "users",
-        },
-      ])
-      .toArray(); // .toArray() forces the aggregation to execute
-
-    const usersCollection = db.collection("users");
-    const userCount = await usersCollection.countDocuments();
-    console.log(`  Created 'users' collection with ${userCount} unique users.`);
-
-    // ---- Step 2: Create the Tweets_Only collection ----
-    // This keeps all tweet fields EXCEPT the embedded user object,
-    // and adds a user_id field that references the users collection.
-    console.log("Step 2: Creating Tweets_Only collection...");
-
-    await tweets
-      .aggregate([
-        {
-          $addFields: {
-            user_id: "$user.id",
-          },
-        },
-        {
-          $project: {
-            user: 0, // remove the embedded user object
-          },
-        },
-        {
-          $out: "tweets_only",
-        },
-      ])
-      .toArray();
-
-    const tweetsOnly = db.collection("tweets_only");
-    const tweetCount = await tweetsOnly.countDocuments();
-    console.log(
-      `  Created 'tweets_only' collection with ${tweetCount} tweets (user referenced by user_id).`
+      }
     );
 
-    console.log("\nDone! Collections created:");
-    console.log("  - users       (unique users)");
-    console.log("  - tweets_only (tweets referencing users by user_id)");
+    const clearedUsers = new Set();
+    let sampleUser = null;
+
+    for await (const tweet of cursor) {
+      const screenName = tweet.user?.screen_name;
+      if (!screenName) {
+        continue;
+      }
+
+      const tweetId = tweet.id_str || String(tweet.id);
+      if (!tweetId) {
+        continue;
+      }
+
+      if (!clearedUsers.has(screenName)) {
+        await redisClient.del(`tweets:${screenName}`);
+        clearedUsers.add(screenName);
+      }
+
+      if (!sampleUser) {
+        sampleUser = screenName;
+      }
+
+      await redisClient.rPush(`tweets:${screenName}`, tweetId);
+
+      const tweetData = {
+        id: tweetId,
+        text: tweet.full_text || tweet.text || "",
+        created_at: tweet.created_at || "",
+        favorite_count: String(
+          typeof tweet.favorite_count === "number" ? tweet.favorite_count : 0
+        ),
+        retweet_count: String(
+          typeof tweet.retweet_count === "number" ? tweet.retweet_count : 0
+        ),
+        screen_name: screenName,
+        user_name: tweet.user?.name || "",
+      };
+
+      await redisClient.hSet(`tweet:${tweetId}`, tweetData);
+    }
+
+    if (!sampleUser) {
+      console.log("No sample user found.");
+      return;
+    }
+
+    const sampleTweetIds = await redisClient.lRange(`tweets:${sampleUser}`, 0, 4);
+
+    console.log(`Sample user: ${sampleUser}`);
+    console.log(`First few tweet IDs for ${sampleUser}:`);
+    console.log(sampleTweetIds);
+
+    if (sampleTweetIds.length > 0) {
+      const sampleTweet = await redisClient.hGetAll(`tweet:${sampleTweetIds[0]}`);
+      console.log("Sample tweet hash:");
+      console.log(sampleTweet);
+    }
+  } catch (error) {
+    console.error("Error in Query5:", error);
   } finally {
-    await client.close();
+    await redisClient.quit();
+    await mongoClient.close();
   }
 }
 
-main().catch(console.error);
+main();

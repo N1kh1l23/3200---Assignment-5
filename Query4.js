@@ -1,46 +1,42 @@
 const { MongoClient } = require("mongodb");
+const { createClient } = require("redis");
 
 async function main() {
-  const client = new MongoClient("mongodb://localhost:27017");
+  const mongoClient = new MongoClient("mongodb://localhost:27017");
+  const redisClient = createClient({ url: "redis://localhost:6379" });
+
   try {
-    await client.connect();
-    const db = client.db("ieeevisTweets");
+    await mongoClient.connect();
+    await redisClient.connect();
+
+    const db = mongoClient.db("ieeevisTweets");
     const tweets = db.collection("tweets");
 
-    // Group by screen_name, compute avg retweet_count and total tweets,
-    // filter to those with more than 3 tweets, sort by avgRetweets desc
-    const results = await tweets
-      .aggregate([
-        {
-          $group: {
-            _id: "$user.screen_name",
-            avgRetweets: { $avg: "$retweet_count" },
-            tweetCount: { $sum: 1 },
-          },
-        },
-        { $match: { tweetCount: { $gt: 3 } } },
-        { $sort: { avgRetweets: -1 } },
-        { $limit: 10 },
-        {
-          $project: {
-            _id: 0,
-            screen_name: "$_id",
-            avgRetweets: { $round: ["$avgRetweets", 2] },
-            tweetCount: 1,
-          },
-        },
-      ])
-      .toArray();
+    await redisClient.del("leaderboard");
 
-    console.log("Top 10 by average retweets (tweeted more than 3 times):");
-    results.forEach((r, i) =>
-      console.log(
-        `${i + 1}. ${r.screen_name} — avg ${r.avgRetweets} retweets (${r.tweetCount} tweets)`
-      )
-    );
+    const cursor = tweets.find({}, { projection: { _id: 0, "user.screen_name": 1 } });
+
+    for await (const tweet of cursor) {
+      const screenName = tweet.user?.screen_name;
+      if (screenName) {
+        await redisClient.zIncrBy("leaderboard", 1, screenName);
+      }
+    }
+
+    const topUsers = await redisClient.zRangeWithScores("leaderboard", 0, 9, {
+      REV: true,
+    });
+
+    console.log("Top 10 users with the most tweets:");
+    topUsers.forEach((entry, index) => {
+      console.log(`${index + 1}. ${entry.value} - ${entry.score} tweets`);
+    });
+  } catch (error) {
+    console.error("Error in Query4:", error);
   } finally {
-    await client.close();
+    await redisClient.quit();
+    await mongoClient.close();
   }
 }
 
-main().catch(console.error);
+main();

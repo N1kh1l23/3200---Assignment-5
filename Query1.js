@@ -1,23 +1,33 @@
 const { MongoClient } = require("mongodb");
+const { createClient } = require("redis");
 
 async function main() {
-  const client = new MongoClient("mongodb://localhost:27017");
+  const mongoClient = new MongoClient("mongodb://localhost:27017");
+  const redisClient = createClient({ url: "redis://localhost:6379" });
+
   try {
-    await client.connect();
-    const db = client.db("ieeevisTweets");
+    await mongoClient.connect();
+    await redisClient.connect();
+
+    const db = mongoClient.db("ieeevisTweets");
     const tweets = db.collection("tweets");
 
-    // A tweet is a retweet if retweeted_status exists
-    // A tweet is a reply if in_reply_to_status_id is not null
-    const count = await tweets.countDocuments({
-      retweeted_status: { $exists: false },
-      in_reply_to_status_id: null,
-    });
+    await redisClient.set("tweetCount", 0);
 
-    console.log(`Tweets that are NOT retweets or replies: ${count}`);
+    const cursor = tweets.find({}, { projection: { _id: 0, id: 1 } });
+
+    for await (const tweet of cursor) {
+      await redisClient.incr("tweetCount");
+    }
+
+    const total = await redisClient.get("tweetCount");
+    console.log(`There were ${total} tweets`);
+  } catch (error) {
+    console.error("Error in Query1:", error);
   } finally {
-    await client.close();
+    await redisClient.quit();
+    await mongoClient.close();
   }
 }
 
-main().catch(console.error);
+main();

@@ -1,33 +1,36 @@
 const { MongoClient } = require("mongodb");
+const { createClient } = require("redis");
 
 async function main() {
-  const client = new MongoClient("mongodb://localhost:27017");
+  const mongoClient = new MongoClient("mongodb://localhost:27017");
+  const redisClient = createClient({ url: "redis://localhost:6379" });
+
   try {
-    await client.connect();
-    const db = client.db("ieeevisTweets");
+    await mongoClient.connect();
+    await redisClient.connect();
+
+    const db = mongoClient.db("ieeevisTweets");
     const tweets = db.collection("tweets");
 
-    // Group by screen_name, count tweets, sort descending, take top 1
-    const results = await tweets
-      .aggregate([
-        {
-          $group: {
-            _id: "$user.screen_name",
-            tweetCount: { $sum: 1 },
-          },
-        },
-        { $sort: { tweetCount: -1 } },
-        { $limit: 1 },
-      ])
-      .toArray();
+    await redisClient.del("screen_names");
 
-    const top = results[0];
-    console.log(
-      `Person with the most tweets: ${top._id} with ${top.tweetCount} tweets`
-    );
+    const cursor = tweets.find({}, { projection: { _id: 0, "user.screen_name": 1 } });
+
+    for await (const tweet of cursor) {
+      const screenName = tweet.user?.screen_name;
+      if (screenName) {
+        await redisClient.sAdd("screen_names", screenName);
+      }
+    }
+
+    const distinctUsers = await redisClient.sCard("screen_names");
+    console.log(`Distinct users in dataset: ${distinctUsers}`);
+  } catch (error) {
+    console.error("Error in Query3:", error);
   } finally {
-    await client.close();
+    await redisClient.quit();
+    await mongoClient.close();
   }
 }
 
-main().catch(console.error);
+main();
